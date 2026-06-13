@@ -332,6 +332,7 @@ class ActionsStancerDolicloud extends CommonHookActions
 
 		require_once DOL_DOCUMENT_ROOT."/core/lib/geturl.lib.php";
 		include_once DOL_DOCUMENT_ROOT.'/core/lib/security.lib.php';
+		require_once DOL_DOCUMENT_ROOT."/core/lib/date.lib.php";
 		dol_include_once('stancerdolicloud/lib/stancerdolicloud.lib.php');
 
 		$resprints = "";
@@ -451,14 +452,18 @@ class ActionsStancerDolicloud extends CommonHookActions
 
 			$urlredirect = $urlwithroot.'/public/payment/';
 			if ($ret1["http_code"] == 200 && !$error) {
+				$this->db->begin();
 				$json->paymentoksessioncode = $_SESSION['paymentoksessioncode'];
 				$encodeddata = json_encode($json);
 				$sql = "UPDATE ".MAIN_DB_PREFIX."stancerdolicloud_pending_payments SET data = '".$encodeddata."' WHERE ref_payment = '".$this->db->escape($ref_payment)."'";
 				$res = $this->db->query($sql);
 				if ($res == false){
 					dol_print_error($this->db);
+					$this->db->rollback();
 					exit;
 				}
+				$this->db->commit();
+
 				$result1 = $ret1["content"];
 				$json1 = json_decode($result1);
 				$urlredirect .= "paymentok.php?fulltag=".urlencode($FULLTAG)."&paymentoksessioncode=".urlencode($_SESSION['paymentoksessioncode'])."&pendingrefpayment=".urlencode($ref_payment);
@@ -572,16 +577,34 @@ class ActionsStancerDolicloud extends CommonHookActions
 							$_SESSION["STANCER_DOLICLOUD_PAYMENT_ID"] = urlencode($json1->id);
 							$urlforredirect = "https://".urlencode($stancerurlpayment)."/".(!getDolGlobalInt("STANCER_DOLICLOUD_LIVE") ? "test_" : "").$_SESSION["STANCER_DOLICLOUD_PAYMENT_ID"];
 
-							// Gestion redirection
-							dol_syslog("Send redirect to ".$urlforredirect, LOG_DEBUG, 0, '_payment');
-							
-							$encodeddata = json_encode($json_data_payment);
-							$sql = "INSERT INTO ".MAIN_DB_PREFIX."stancerdolicloud_pending_payments (ref_payment, data) VALUES ('".$this->db->escape($new_ref_payment) ."','".$encodeddata."')";
+								$this->db->begin();
+							// Clean table pending_payment
+							$daybeforedelete = getDolGlobalInt("STANCER_DOLICLOUD_NB_DAY_PENDING_PAYMENT", 10) * -1;
+							$datetodelete = dol_time_plus_duree(dol_now(), $daybeforedelete, 'd');
+							$sql = "DELETE FROM ".MAIN_DB_PREFIX."stancerdolicloud_pending_payments WHERE date_creation <= '".$this->db->idate($datetodelete)."'";
 							$res = $this->db->query($sql);
 							if ($res == false){
 								dol_print_error($this->db);
+								$error++;
+							}
+
+							// Create pending_payment entry
+							$encodeddata = json_encode($json_data_payment);
+							$sql = "INSERT INTO ".MAIN_DB_PREFIX."stancerdolicloud_pending_payments (ref_payment, data, date_creation) VALUES ('".$this->db->escape($new_ref_payment) ."','".$encodeddata."', '".$this->db->idate(dol_now())."')";
+							$res = $this->db->query($sql);
+							if ($res == false){
+								dol_print_error($this->db);
+								$error++;
+							}
+
+							if ($error) {
+								$this->db->rollback();
 								exit();
 							}
+							$this->db->commit();
+	
+							// Gestion redirection
+							dol_syslog("Send redirect to ".$urlforredirect, LOG_DEBUG, 0, '_payment');
 							header("Location: ".$urlforredirect);
 							exit;
 						} else {
